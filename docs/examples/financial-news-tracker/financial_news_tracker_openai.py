@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Financial News Tracker - A tool to fetch and analyze financial news using Perplexity's Sonar API.
+Financial News Tracker - A tool to fetch and analyze financial news using OpenAI's API.
 This tool provides real-time financial market insights, news summaries, and market analysis.
 """
 
@@ -55,30 +55,25 @@ class FinancialNewsResult(BaseModel):
 
 
 class FinancialNewsTracker:
-    """A class to interact with Perplexity Sonar API for financial news tracking."""
+    """A class to interact with OpenAI API for financial news tracking."""
 
-    API_URL = "https://api.perplexity.ai/chat/completions"
-    DEFAULT_MODEL = "sonar"
+    API_URL = "https://api.openai.com/v1/chat/completions"
+    DEFAULT_MODEL = "gpt-4o"
 
-    # Models that support structured outputs
-    STRUCTURED_OUTPUT_MODELS = [
-        "sonar",
-        "sonar-pro",
-        "sonar-reasoning",
-        "sonar-reasoning-pro",
-    ]
+    # Available OpenAI models
+    AVAILABLE_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 
     def __init__(self, api_key: Optional[str] = None):
         """
         Initialize the FinancialNewsTracker with API key.
 
         Args:
-            api_key: Perplexity API key. If None, will try to read from environment.
+            api_key: OpenAI API key. If None, will try to read from environment.
         """
         self.api_key = api_key or self._get_api_key()
         if not self.api_key:
             raise ValueError(
-                "API key not found. Please provide via argument or environment variable PPLX_API_KEY."
+                "API key not found. Please provide via argument or environment variable OPENAI_API_KEY."
             )
 
     def _get_api_key(self) -> str:
@@ -88,11 +83,11 @@ class FinancialNewsTracker:
         Returns:
             The API key if found, empty string otherwise.
         """
-        api_key = os.environ.get("PPLX_API_KEY", "")
+        api_key = os.environ.get("OPENAI_API_KEY", "")
         if api_key:
             return api_key
 
-        for key_file in ["pplx_api_key", ".pplx_api_key"]:
+        for key_file in ["openai_api_key", ".openai_api_key"]:
             key_path = Path(key_file)
             if key_path.exists():
                 try:
@@ -103,11 +98,7 @@ class FinancialNewsTracker:
         return ""
 
     def get_financial_news(
-        self,
-        query: str,
-        time_range: str = "24h",
-        model: str = DEFAULT_MODEL,
-        use_structured_output: bool = False,
+        self, query: str, time_range: str = "24h", model: str = DEFAULT_MODEL
     ) -> Dict[str, Any]:
         """
         Fetch financial news based on the query.
@@ -115,8 +106,7 @@ class FinancialNewsTracker:
         Args:
             query: The financial topic or query (e.g., "tech stocks", "S&P 500", "cryptocurrency")
             time_range: Time range for news (e.g., "24h", "1w", "1m")
-            model: The Perplexity model to use
-            use_structured_output: Whether to use structured output API
+            model: The OpenAI model to use
 
         Returns:
             The parsed response containing financial news and analysis.
@@ -128,7 +118,30 @@ class FinancialNewsTracker:
 
         system_prompt = """You are a professional financial analyst with expertise in market research and news analysis. 
         Your task is to provide comprehensive financial news updates and market analysis. 
-        Focus on accuracy, relevance, and actionable insights. Always cite recent sources and provide balanced analysis."""
+        Focus on accuracy, relevance, and actionable insights. Always provide balanced analysis.
+        
+        Please respond with a JSON object that follows this structure:
+        {
+            "query_topic": "the topic searched",
+            "time_period": "time period description",
+            "summary": "executive summary of financial news",
+            "news_items": [
+                {
+                    "headline": "news headline",
+                    "summary": "brief summary",
+                    "impact": "HIGH/MEDIUM/LOW/NEUTRAL",
+                    "sectors_affected": ["sector1", "sector2"],
+                    "source": "news source"
+                }
+            ],
+            "market_analysis": {
+                "market_sentiment": "BULLISH/BEARISH/NEUTRAL",
+                "key_drivers": ["driver1", "driver2"],
+                "risks": ["risk1", "risk2"],
+                "opportunities": ["opportunity1", "opportunity2"]
+            },
+            "recommendations": ["recommendation1", "recommendation2"]
+        }"""
 
         time_context = self._get_time_context(time_range)
 
@@ -143,7 +156,7 @@ Please include:
 4. Sectors or companies most affected
 5. Investment insights or recommendations
 
-Focus on the most significant and recent developments."""
+Focus on the most significant and recent developments. Respond with valid JSON only."""
 
         headers = {
             "accept": "application/json",
@@ -157,23 +170,14 @@ Focus on the most significant and recent developments."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            "temperature": 0.3,
+            "max_tokens": 4000,
         }
-
-        can_use_structured_output = (
-            model in self.STRUCTURED_OUTPUT_MODELS and use_structured_output
-        )
-        if can_use_structured_output:
-            data["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"schema": FinancialNewsResult.model_json_schema()},
-            }
 
         try:
             response = requests.post(self.API_URL, headers=headers, json=data)
             response.raise_for_status()
             result = response.json()
-
-            citations = result.get("citations", [])
 
             if (
                 "choices" in result
@@ -182,22 +186,13 @@ Focus on the most significant and recent developments."""
             ):
                 content = result["choices"][0]["message"]["content"]
 
-                if can_use_structured_output:
-                    try:
-                        parsed = json.loads(content)
-                        if citations and "citations" not in parsed:
-                            parsed["citations"] = citations
-                        return parsed
-                    except json.JSONDecodeError as e:
-                        return {
-                            "error": f"Failed to parse structured output: {str(e)}",
-                            "raw_response": content,
-                            "citations": citations,
-                        }
-                else:
+                try:
+                    # Try to parse as JSON first
+                    parsed = json.loads(content)
+                    return parsed
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, try to extract JSON from the response
                     parsed = self._parse_response(content)
-                    if citations and "citations" not in parsed:
-                        parsed["citations"] = citations
                     return parsed
 
             return {"error": "Unexpected API response format", "raw_response": result}
@@ -344,16 +339,11 @@ def display_results(results: Dict[str, Any], format_json: bool = False):
         print("\n📊 FINANCIAL NEWS ANALYSIS:")
         print(results["raw_response"])
 
-    if "citations" in results and results["citations"]:
-        print("\n📚 Sources:")
-        for citation in results["citations"]:
-            print(f"  • {citation}")
-
 
 def main():
     """Main entry point for the financial news tracker CLI."""
     parser = argparse.ArgumentParser(
-        description="Financial News Tracker - Fetch and analyze financial news using Perplexity Sonar API"
+        description="Financial News Tracker - Fetch and analyze financial news using OpenAI API"
     )
 
     parser.add_argument(
@@ -376,24 +366,19 @@ def main():
         "--model",
         type=str,
         default=FinancialNewsTracker.DEFAULT_MODEL,
-        help=f"Perplexity model to use (default: {FinancialNewsTracker.DEFAULT_MODEL})",
+        choices=FinancialNewsTracker.AVAILABLE_MODELS,
+        help=f"OpenAI model to use (default: {FinancialNewsTracker.DEFAULT_MODEL})",
     )
 
     parser.add_argument(
         "-k",
         "--api-key",
         type=str,
-        help="Perplexity API key (if not provided, will look for environment variable PPLX_API_KEY)",
+        help="OpenAI API key (if not provided, will look for environment variable OPENAI_API_KEY)",
     )
 
     parser.add_argument(
         "-j", "--json", action="store_true", help="Output results as JSON"
-    )
-
-    parser.add_argument(
-        "--structured-output",
-        action="store_true",
-        help="Enable structured output format (requires Tier 3+ API access)",
     )
 
     args = parser.parse_args()
@@ -401,16 +386,10 @@ def main():
     try:
         tracker = FinancialNewsTracker(api_key=args.api_key)
 
-        print(
-            f"Fetching financial news for '{args.query}' using model {args.model}...",
-            file=sys.stderr,
-        )
+        print(f"Fetching financial news for '{args.query}'...", file=sys.stderr)
 
         results = tracker.get_financial_news(
-            query=args.query,
-            time_range=args.time_range,
-            model=args.model,
-            use_structured_output=args.structured_output,
+            query=args.query, time_range=args.time_range, model=args.model
         )
 
         display_results(results, format_json=args.json)
